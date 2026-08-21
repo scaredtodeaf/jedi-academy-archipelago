@@ -21,12 +21,29 @@ network code:
 
 ## Running
 
-From inside your Archipelago install (this client imports from the
-Archipelago repo it's part of - it isn't standalone):
+**Needs a source checkout of Archipelago, not a frozen/installed one.**
+This client imports `Utils`, `CommonClient`, etc. from the Archipelago repo
+it's dropped into - in a normal installed copy (the kind with
+`Archipelago*.exe` files, like what the Archipelago website's installer
+gives you), those modules only exist bundled inside the compiled exes, not
+as loose importable `.py` files, so `python JediAcademySPClient.py` fails
+with `ModuleNotFoundError: No module named 'Utils'` there. Clone
+[ArchipelagoMW/Archipelago](https://github.com/ArchipelagoMW/Archipelago)
+yourself, drop this client and `jedi_academy_sp/` (from `../jedi_academy_sp/`
+in this repo) into it, and run from there instead - the Options Creator,
+Generate, and Server can still be your regular frozen install; only the
+client needs the source checkout.
+
+From inside that checkout:
 
 ```
-python JediAcademySPClient.py
+python JediAcademySPClient.py --connect host:port --name YourSlotName
 ```
+
+`--password` too if the room needs one. `start_client.bat` in this folder
+prompts for all of these interactively instead - edit the
+`AP_SOURCE_CHECKOUT` path near the top of it to point at your own checkout
+first.
 
 Auto-detects the OpenJK homepath (tries the OneDrive-redirected Documents
 path first, then the plain one). If neither exists yet, start the game once
