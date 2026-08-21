@@ -315,10 +315,27 @@ index 782516bd..0bead06f 100644
  	// a typo at the server console won't end the game
  	if (strchr (map, '\\') ) {
 diff --git a/code/ui/ui_main.cpp b/code/ui/ui_main.cpp
-index 4a20f0ee..c45b1945 100644
+index 4a20f0ee..3d377261 100644
 --- a/code/ui/ui_main.cpp
 +++ b/code/ui/ui_main.cpp
-@@ -5158,15 +5158,19 @@ static void UI_AffectForcePowerLevel ( const char *forceName )
+@@ -4592,8 +4592,14 @@ static void UI_InitAllocForcePowers ( const char *forceName )
+ 		}
+ 	}
+ 
+-	// Set weapons button to inactive
+-	UI_ForcePowerWeaponsButton(qfalse);
++	// Archipelago: vanilla required picking a power before letting you
++	// continue (weapons button starts inactive, only UI_AffectForcePowerLevel
++	// re-enables it once you click something). Since the vanilla skill-point
++	// spend is suppressed and clicking a power no longer does anything real
++	// (see UI_AffectForcePowerLevel), there's nothing left to force a choice
++	// about - start the button active instead of gating progress on a
++	// meaningless click.
++	UI_ForcePowerWeaponsButton(qtrue);
+ }
+ 
+ // Flip flop between being able to see the text showing the Force Point has or hasn't been allocated (Used by Force Power Allocation screen)
+@@ -5158,15 +5164,19 @@ static void UI_AffectForcePowerLevel ( const char *forceName )
  
  	uiInfo.forcePowerUpdated = forcePowerI;	// Remember which power was updated
  
