@@ -28,7 +28,9 @@ progression - see the world's setup guide for the full scope.
 - **[`client/`](client/)** - the client you run alongside the game.
 - **[`engine-patch/`](engine-patch/)** - the actual gameplay-side work: a
   patch against OpenJK adding the check/lock hooks this world needs, plus
-  build instructions.
+  build instructions. Prefer not to build it yourself? Grab a
+  [prebuilt Windows binary](../../releases/latest) instead - just drop it
+  into your existing Jedi Academy install.
 - **[`research/notes.md`](research/notes.md)** - facts and gotchas found
   along the way (map/objective/weapon/force-power data pulled straight from
   source, plus debugging gotchas worth not rediscovering).
