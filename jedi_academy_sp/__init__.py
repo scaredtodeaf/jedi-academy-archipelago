@@ -1,5 +1,6 @@
 from BaseClasses import Tutorial, ItemClassification
 from worlds.AutoWorld import World, WebWorld
+from worlds.LauncherComponents import Component, components
 from .Items import JAItem, item_table, item_name_to_id, FILLER_ITEM_NAME, PROGRESSIVE_FORCE_ITEM_NAMES
 from .Data import FORCE_POWERS
 from .Locations import JALocation, location_name_to_id
@@ -9,6 +10,14 @@ from .Data import MISSIONS
 from .Options import JediAcademySPOptions
 
 client_version = 1
+
+# Registers the client with the Archipelago Launcher (ArchipelagoLauncher.exe)
+# so it shows up as a clickable button next to every other game's client,
+# instead of needing to be run manually from a terminal. script_name matches
+# JediAcademySPClient.py exactly (no .py suffix) - the Launcher runs it as a
+# Python script when not frozen, or looks for an ArchipelagoJediAcademySPClient
+# executable (the auto-derived frozen_name) if it is.
+components.append(Component("Jedi Academy SP Client", "JediAcademySPClient"))
 
 
 class JediAcademySPWeb(WebWorld):
