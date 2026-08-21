@@ -205,6 +205,13 @@ async def game_watcher(ctx: JediAcademySPContext):
 if __name__ == "__main__":
 	async def main(args):
 		ctx = JediAcademySPContext(args.connect, args.password)
+		if args.name:
+			# CommonContext has no built-in --name flag (only --connect and
+			# --password) - setting username directly here skips the
+			# interactive "Enter slot name:" prompt get_username() would
+			# otherwise show, so a wrapper script can pass everything up
+			# front instead of needing to type the name in after launch.
+			ctx.username = args.name
 		ctx.server_task = asyncio.create_task(server_loop(ctx), name="server loop")
 		if gui_enabled:
 			ctx.run_gui()
@@ -220,6 +227,7 @@ if __name__ == "__main__":
 	import colorama
 
 	parser = get_base_parser(description="Jedi Academy SP Client, for text interfacing.")
+	parser.add_argument('--name', default=None, help='Slot name to connect as.')
 	args, rest = parser.parse_known_args()
 	colorama.init()
 	asyncio.run(main(args))
