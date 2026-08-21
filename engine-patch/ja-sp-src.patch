@@ -1,0 +1,343 @@
+diff --git a/code/game/Q3_Interface.cpp b/code/game/Q3_Interface.cpp
+index eb344d2b..0e1d0f19 100644
+--- a/code/game/Q3_Interface.cpp
++++ b/code/game/Q3_Interface.cpp
+@@ -787,6 +787,12 @@ static void Q3_SetObjective(const char *ObjEnum, int status)
+ 			objectivesShown++;
+ 			missionInfo_Updated = qtrue;	// Activate flashing text
+ 		}
++		// Archipelago: a check, not a lock - objectives aren't part of the
++		// randomized pool (nothing here is gated), just detected and reported
++		// like secrets/treasure. ObjEnum (e.g. "T1_DANGER_OBJ1") is already a
++		// stable, globally-unique ID from objectiveTable, no need to compute
++		// one. TODO: report to the AP client once that side exists.
++		gi.Printf( "Archipelago: objective check reached (%s)\n", ObjEnum );
+ 		break;
+ 	case SET_OBJ_FAILED :
+ 		objective->status = OBJECTIVE_STAT_FAILED;
+diff --git a/code/game/g_client.cpp b/code/game/g_client.cpp
+index 053a8f10..5365d324 100644
+--- a/code/game/g_client.cpp
++++ b/code/game/g_client.cpp
+@@ -2115,6 +2115,34 @@ qboolean G_CheckPlayerDarkSide( void )
+ 	return qfalse;
+ }
+ 
++// Archipelago: the prologue (character creation through the end of the
++// training sequence) is intentionally left as vanilla, ungated progression -
++// see the matching map list and rationale in AP_IsMissionMapLocked (server/
++// sv_ccmds.cpp). Kept as a separate small list here rather than shared code
++// since this is engine-side (server/) vs game-side (game/) and the two
++// modules don't share source.
++static qboolean AP_IsPrologueMap( const char *mapname )
++{
++	// Confirmed from a live server log (2026-08-20): the real campaign opens
++	// on yavin1 -> yavin1b -> (presumably yavin2), not academy1-6 - those
++	// don't appear anywhere in objectives.h's objective table, so they're
++	// not part of the actual SP campaign flow at all. t1_sour/t1_inter kept -
++	// both have real entries in that table (T1_SOUR_OBJ1-4) and bridge into
++	// the holomap.
++	static const char *prologueMaps[] = {
++		"yavin1", "yavin1b", "yavin2",
++		"t1_sour", "t1_inter",
++	};
++	for ( size_t i = 0; i < ARRAY_LEN( prologueMaps ); i++ )
++	{
++		if ( !Q_stricmp( mapname, prologueMaps[i] ) )
++		{
++			return qtrue;
++		}
++	}
++	return qfalse;
++}
++
+ void G_ChangePlayerModel( gentity_t *ent, const char *newModel );
+ qboolean ClientSpawn(gentity_t *ent, SavedGameJustLoaded_e eSavedGameJustLoaded )
+ {
+@@ -2270,7 +2298,15 @@ qboolean ClientSpawn(gentity_t *ent, SavedGameJustLoaded_e eSavedGameJustLoaded
+ 			client->ps.stats[STAT_WEAPONS] |= ( 1 << WP_STUN_BATON );
+ 			client->ps.weapon = WP_STUN_BATON;
+ 		}
+-		else
++		// Archipelago: this default spawn-time grant bypassed the weapon lock
++		// in Pickup_Weapon (g_items.cpp) entirely - it fires on every fresh
++		// level spawn, so it would've silently re-handed the saber back on
++		// every tier mission too. Gate it the same way, except in the
++		// prologue, which is intentionally left ungated vanilla progression
++		// (see AP_IsMissionMapLocked in sv_ccmds.cpp) and needs the saber to
++		// teach saber combat in the first place.
++		else if ( AP_IsPrologueMap( level.mapname )
++			|| gi.Cvar_VariableIntegerValue( "g_apUnlock_weapon_saber" ) != 0 )
+ 		{	// give the saber because most test maps will not have the STUN BATON flag set
+ 			client->ps.stats[STAT_WEAPONS] |= ( 1 << WP_SABER );	//this is precached in SP_info_player_deathmatch
+ 			client->ps.weapon = WP_SABER;
+diff --git a/code/game/g_items.cpp b/code/game/g_items.cpp
+index 2cfcf089..0236f7bd 100644
+--- a/code/game/g_items.cpp
++++ b/code/game/g_items.cpp
+@@ -446,11 +446,27 @@ qboolean Pickup_Saber( gentity_t *self, qboolean hadSaber, gentity_t *pickUpSabe
+ }
+ 
+ extern void CG_ChangeWeapon( int num );
++
++// Archipelago: per-weapon-type unlock, scoped by classname (e.g. "weapon_bryar_pistol")
++// rather than per-instance - unlocking a weapon type once makes every copy of it
++// pickable everywhere, matching how progressive weapon unlocks work in other AP games.
++static qboolean AP_IsWeaponLocked( const gentity_t *weaponEnt )
++{
++	char cvarName[64];
++	Com_sprintf( cvarName, sizeof(cvarName), "g_apUnlock_%s", weaponEnt->item->classname );
++	return (qboolean)( gi.Cvar_VariableIntegerValue( cvarName ) == 0 );
++}
++
+ int Pickup_Weapon (gentity_t *ent, gentity_t *other)
+ {
+ 	int		quantity;
+ 	qboolean	hadWeapon = qfalse;
+ 
++	if ( other->s.number == 0 && AP_IsWeaponLocked( ent ) )
++	{//player, and this weapon type isn't unlocked yet - leave it on the ground
++		return 0;
++	}
++
+ 	/*
+ 	if ( ent->count || (ent->activator && !ent->activator->s.number) )
+ 	{
+diff --git a/code/game/g_main.cpp b/code/game/g_main.cpp
+index a349d4f9..ab64d443 100644
+--- a/code/game/g_main.cpp
++++ b/code/game/g_main.cpp
+@@ -1896,6 +1896,63 @@ int AITime = 0;
+ int navTime = 0;
+ #endif//	AI_TIMERS
+ 
++// Archipelago: polls a command queue file the AP client writes to. This SP
++// build has no rcon support at all (confirmed - nothing in code/server/
++// implements it, unlike MP/dedicated), so this is the substitute: the client
++// appends lines like "set g_apUnlock_t1_danger 1" or "ap_setForcePush 2" to
++// ap_commands.txt (fs_homepath, same place openjk_sp.cfg/qconsole.log live),
++// we poll and execute each line as a real console command, then clear the
++// file. Read-direction (check detection) needs no code at all - the engine's
++// built-in "logfile 2" cvar already mirrors every console print, including
++// our "Archipelago: ... check reached" lines, straight to qconsole.log.
++static int s_apNextCommandPollTime = 0;
++static void AP_PollCommandQueue( void )
++{
++	if ( level.time < s_apNextCommandPollTime )
++	{
++		return;
++	}
++	s_apNextCommandPollTime = level.time + 500;
++
++	fileHandle_t f;
++	int len = gi.FS_FOpenFile( "ap_commands.txt", &f, FS_READ );
++	if ( len <= 0 )
++	{
++		if ( f )
++		{
++			gi.FS_FCloseFile( f );
++		}
++		return;
++	}
++
++	static char buffer[8192];
++	if ( len >= (int)sizeof(buffer) )
++	{
++		len = sizeof(buffer) - 1;
++	}
++	gi.FS_Read( buffer, len, f );
++	buffer[len] = '\0';
++	gi.FS_FCloseFile( f );
++
++	char *line = strtok( buffer, "\r\n" );
++	while ( line )
++	{
++		if ( *line )
++		{
++			gi.SendConsoleCommand( va( "%s\n", line ) );
++		}
++		line = strtok( NULL, "\r\n" );
++	}
++
++	// clear the queue now that it's been consumed
++	fileHandle_t fw;
++	gi.FS_FOpenFile( "ap_commands.txt", &fw, FS_WRITE );
++	if ( fw )
++	{
++		gi.FS_FCloseFile( fw );
++	}
++}
++
+ 
+ void G_RunFrame( int levelTime ) {
+ 	int			i;
+@@ -1910,6 +1967,8 @@ void G_RunFrame( int levelTime ) {
+ 	level.previousTime = level.time;
+ 	level.time = levelTime;
+ 
++	AP_PollCommandQueue();
++
+ 	//ResetTeamCounters();
+ 	NAV::DecayDangerSenses();
+ 	Rail_Update();
+diff --git a/code/game/g_svcmds.cpp b/code/game/g_svcmds.cpp
+index 0374e140..21be4db9 100644
+--- a/code/game/g_svcmds.cpp
++++ b/code/game/g_svcmds.cpp
+@@ -927,6 +927,27 @@ static svcmd_t svcmds[] = {
+ 	{ "setForceAll",				Svcmd_SetForceAll_f,						CMD_CHEAT },
+ 	{ "setSaberAll",				Svcmd_SetSaberAll_f,						CMD_CHEAT },
+ 
++	// Archipelago: apply a progressive force power item (not cheat-gated - a
++	// real player needs these to work with sv_cheats off). Reuses the same
++	// Svcmd_ForceSetLevel_f<power> instantiations as the setForce* cheats
++	// above; only the command name and the missing CMD_CHEAT flag differ.
++	{ "ap_setForceJump",			Svcmd_ForceSetLevel_f<FP_LEVITATION>,		CMD_NONE },
++	{ "ap_setSaberThrow",			Svcmd_ForceSetLevel_f<FP_SABERTHROW>,		CMD_NONE },
++	{ "ap_setForceHeal",			Svcmd_ForceSetLevel_f<FP_HEAL>,				CMD_NONE },
++	{ "ap_setForcePush",			Svcmd_ForceSetLevel_f<FP_PUSH>,				CMD_NONE },
++	{ "ap_setForcePull",			Svcmd_ForceSetLevel_f<FP_PULL>,				CMD_NONE },
++	{ "ap_setForceSpeed",			Svcmd_ForceSetLevel_f<FP_SPEED>,			CMD_NONE },
++	{ "ap_setForceGrip",			Svcmd_ForceSetLevel_f<FP_GRIP>,				CMD_NONE },
++	{ "ap_setForceLightning",		Svcmd_ForceSetLevel_f<FP_LIGHTNING>,		CMD_NONE },
++	{ "ap_setMindTrick",			Svcmd_ForceSetLevel_f<FP_TELEPATHY>,		CMD_NONE },
++	{ "ap_setSaberDefense",			Svcmd_ForceSetLevel_f<FP_SABER_DEFENSE>,	CMD_NONE },
++	{ "ap_setSaberOffense",			Svcmd_ForceSetLevel_f<FP_SABER_OFFENSE>,	CMD_NONE },
++	{ "ap_setForceRage",			Svcmd_ForceSetLevel_f<FP_RAGE>,				CMD_NONE },
++	{ "ap_setForceDrain",			Svcmd_ForceSetLevel_f<FP_DRAIN>,			CMD_NONE },
++	{ "ap_setForceProtect",			Svcmd_ForceSetLevel_f<FP_PROTECT>,			CMD_NONE },
++	{ "ap_setForceAbsorb",			Svcmd_ForceSetLevel_f<FP_ABSORB>,			CMD_NONE },
++	{ "ap_setForceSight",			Svcmd_ForceSetLevel_f<FP_SEE>,				CMD_NONE },
++
+ 	{ "saberAttackCycle",			Svcmd_SaberAttackCycle_f,					CMD_NONE },
+ 
+ 	{ "runscript",					Svcmd_RunScript_f,							CMD_CHEAT },
+diff --git a/code/game/g_target.cpp b/code/game/g_target.cpp
+index 9d18d777..c294001b 100644
+--- a/code/game/g_target.cpp
++++ b/code/game/g_target.cpp
+@@ -1022,6 +1022,12 @@ void target_level_change_use(gentity_t *self, gentity_t *other, gentity_t *activ
+ 			&& ( level.mapname[1] == '1' || level.mapname[1] == '2' || level.mapname[1] == '3' )
+ 			)
+ 		{
++			// Archipelago: a check, not a lock - completing one of the 14
++			// tier missions, separate from the access lock item required to
++			// enter it in the first place. Reuses vanilla's own tier-mission
++			// detection right above rather than a separate map-name list.
++			// TODO: report to the AP client once that side exists.
++			gi.Printf( "Archipelago: mission completion check reached (mission_complete_%s)\n", level.mapname );
+ 			char s[2048];
+ 			gi.Cvar_VariableStringBuffer("tiers_complete", s, sizeof(s));	//get the current list
+ 			if (*s)
+@@ -1224,6 +1230,13 @@ void target_secret_use(gentity_t *self, gentity_t *other, gentity_t *activator)
+ 	//we'll assume that the activator is the player
+ 	gclient_t* const client = &level.clients[0];
+ 	client->sess.missionStats.secretsFound++;
++	// Archipelago: a check, not a lock - found through ordinary play like
++	// every secret already is, just detected and reported. Position-based ID
++	// (map + origin) since secrets have no reliable unique name, same scheme
++	// as the RTCW project's treasure/document checks. TODO: report to the AP
++	// client once that side exists.
++	gi.Printf( "Archipelago: secret check reached (secret_%s_%.0f_%.0f_%.0f)\n",
++		level.mapname, self->s.origin[0], self->s.origin[1], self->s.origin[2] );
+ 	if ( activator )
+ 	{
+ 		G_Sound( activator, self->noise_index );
+diff --git a/code/game/wp_saber.cpp b/code/game/wp_saber.cpp
+index ae6985de..3a739d7f 100644
+--- a/code/game/wp_saber.cpp
++++ b/code/game/wp_saber.cpp
+@@ -14410,8 +14410,10 @@ void WP_InitForcePowers( gentity_t *ent )
+ 	{//player
+ 		if ( !g_cheats->integer )//devmaps give you all the FP
+ 		{
+-			ent->client->ps.forcePowerLevel[FP_SABER_DEFENSE] = FORCE_LEVEL_1;
+-			ent->client->ps.forcePowerLevel[FP_SABER_OFFENSE] = FORCE_LEVEL_1;
++			// Archipelago: no free starting levels - Saber Offense/Defense are
++			// progressive items like every other power (see ap_setSaberOffense/
++			// ap_setSaberDefense in g_svcmds.cpp). Vanilla granted level 1 of
++			// each here; a fresh AP character starts at FORCE_LEVEL_0 instead.
+ 		}
+ 		else
+ 		{
+diff --git a/code/server/sv_ccmds.cpp b/code/server/sv_ccmds.cpp
+index 782516bd..0bead06f 100644
+--- a/code/server/sv_ccmds.cpp
++++ b/code/server/sv_ccmds.cpp
+@@ -41,6 +41,36 @@ These commands can only be entered from stdin or by a remote operator datagram
+ qboolean qbLoadTransition = qfalse;
+ 
+ //=========================================================
++// Archipelago: mission-tier holomap gating.
++//
++// Only the 14 non-linear holomap mission-select entry points are lock-checked
++// here - the prologue (academy1-6, t1_sour, t1_inter) and the fixed
++// post-holomap endgame chain (hoth2/3, kor1/2, taspir1/2, vjun1-3, yavin1/1b/2)
++// are vanilla linear progression the player can't choose between, so they're
++// intentionally left ungated. This is the single choke point every map load
++// in the SP game passes through (console "map"/"devmap", and the mission
++// select menu's "maptransition" command both funnel into SV_Map_()), so
++// blocking here is authoritative - not just a UI-side grey-out.
++static const char *s_apGatedMissionMaps[] = {
++	"t1_danger", "t1_fatal", "t1_rail", "t1_surprise",
++	"t2_dpred", "t2_rancor", "t2_rogue", "t2_trip", "t2_wedge",
++	"t3_bounty", "t3_byss", "t3_hevil", "t3_rift", "t3_stamp",
++};
++
++static bool AP_IsMissionMapLocked( const char *map )
++{
++	for ( size_t i = 0; i < ARRAY_LEN( s_apGatedMissionMaps ); i++ )
++	{
++		if ( !Q_stricmp( map, s_apGatedMissionMaps[i] ) )
++		{
++			char cvarName[64];
++			Com_sprintf( cvarName, sizeof(cvarName), "g_apUnlock_%s", map );
++			return Cvar_VariableIntegerValue( cvarName ) == 0;
++		}
++	}
++	return false; // not a gated mission map, never locked
++}
++
+ // don't call this directly, it should only be called from SV_Map_f() or SV_MapTransition_f()
+ //
+ static bool SV_Map_( ForceReload_e eForceReload )
+@@ -54,6 +84,12 @@ static bool SV_Map_( ForceReload_e eForceReload )
+ 		return false;
+ 	}
+ 
++	if ( AP_IsMissionMapLocked( map ) )
++	{
++		Com_Printf( "Archipelago: mission '%s' is locked - waiting for g_apUnlock_%s\n", map, map );
++		return false;
++	}
++
+ 	// make sure the level exists before trying to change, so that
+ 	// a typo at the server console won't end the game
+ 	if (strchr (map, '\\') ) {
+diff --git a/code/ui/ui_main.cpp b/code/ui/ui_main.cpp
+index 4a20f0ee..c45b1945 100644
+--- a/code/ui/ui_main.cpp
++++ b/code/ui/ui_main.cpp
+@@ -5158,15 +5158,19 @@ static void UI_AffectForcePowerLevel ( const char *forceName )
+ 
+ 	uiInfo.forcePowerUpdated = forcePowerI;	// Remember which power was updated
+ 
++	// Archipelago: this is a check, not a lock - the vanilla skill-point spend is
++	// suppressed (no forcePowerLevel increment, no forcePowersKnown bit set here).
++	// Real force power levels only come from progressive items granted externally
++	// via the ap_setforcelevel command (see Svcmd_APSetForceLevel_f in g_svcmds.cpp).
++	// TODO: report this check (forceName / powerEnums[forcePowerI]) out to the AP
++	// client once that side exists - for now this only blocks the vanilla effect.
++	Com_Printf( "Archipelago: force power check reached (%s) - not applying vanilla upgrade\n", forceName );
+ 	if( pState )
+ 	{
+-		pState->forcePowerLevel[powerEnums[forcePowerI].powerEnum]++;	// Increment it
+-		pState->forcePowersKnown |= ( 1 << powerEnums[forcePowerI].powerEnum );
+ 		forcelevel = pState->forcePowerLevel[powerEnums[forcePowerI].powerEnum];
+ 	}
+ 	else
+ 	{
+-		uiInfo.forcePowerLevel[powerEnums[forcePowerI].powerEnum]++;	// Increment it
+ 		forcelevel = uiInfo.forcePowerLevel[powerEnums[forcePowerI].powerEnum];
+ 	}
+ 
